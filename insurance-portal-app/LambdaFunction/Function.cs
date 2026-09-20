@@ -1,6 +1,9 @@
+using System.Text.Json;
 using Amazon.Lambda.Core;
 using Amazon.Lambda.S3Events;
 using Amazon.S3;
+using Amazon.SecretsManager;
+using Amazon.SecretsManager.Model;
 using MySqlConnector;
 
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
@@ -10,13 +13,11 @@ namespace InsurancePortalLambda;
 public class Function
 {
     private static readonly IAmazonS3 S3Client = new AmazonS3Client();
+    private static readonly IAmazonSecretsManager SecretsClient = new AmazonSecretsManagerClient();
 
-    // These are read from Lambda Environment Variables (set in the AWS Console
-    // when you create the function - see setup instructions).
-    private static readonly string DbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? "";
-    private static readonly string DbName = Environment.GetEnvironmentVariable("DB_NAME") ?? "insuranceportal";
-    private static readonly string DbUser = Environment.GetEnvironmentVariable("DB_USER") ?? "";
-    private static readonly string DbPassword = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "";
+    // Name of the secret in AWS Secrets Manager holding the DB credentials
+    private static readonly string SecretName =
+        Environment.GetEnvironmentVariable("DB_SECRET_NAME") ?? "insurance-portal-db-credentials";
 
     /// <summary>
     /// Entry point triggered by an S3 "ObjectCreated" event whenever a file
@@ -24,6 +25,11 @@ public class Function
     /// </summary>
     public async Task FunctionHandler(S3Event s3Event, ILambdaContext context)
     {
+        // Fetch DB credentials from Secrets Manager once per invocation.
+        // We log confirmation of retrieval (non-sensitive fields only) to
+        // satisfy the bonus requirement of "showing it in the console".
+        var dbCreds = await GetDbCredentialsAsync(context);
+
         foreach (var record in s3Event.Records)
         {
             var bucketName = record.S3.Bucket.Name;
@@ -40,8 +46,8 @@ public class Function
 
                 context.Logger.LogInformation($"File: {objectKey} | Content-Type: {contentType} | Timestamp: {uploadTimestamp:O}");
 
-                // 2. Insert the file info into RDS MySQL
-                await InsertFileRecordAsync(objectKey, contentType, uploadTimestamp, context);
+                // 2. Insert the file info into RDS MySQL, using credentials from Secrets Manager
+                await InsertFileRecordAsync(objectKey, contentType, uploadTimestamp, dbCreds, context);
 
                 context.Logger.LogInformation($"Successfully recorded '{objectKey}' in the database.");
             }
@@ -53,11 +59,44 @@ public class Function
         }
     }
 
+    /// <summary>
+    /// Retrieves the DB connection secret from AWS Secrets Manager.
+    /// Logs confirmation of a successful fetch and the non-sensitive fields
+    /// (username, host, dbname) to CloudWatch - never the password itself.
+    /// </summary>
+    private static async Task<DbCredentials> GetDbCredentialsAsync(ILambdaContext context)
+    {
+        context.Logger.LogInformation($"Fetching DB credentials from Secrets Manager secret '{SecretName}'...");
+
+        var request = new GetSecretValueRequest { SecretId = SecretName };
+        var response = await SecretsClient.GetSecretValueAsync(request);
+
+        var secretJson = JsonDocument.Parse(response.SecretString);
+        var root = secretJson.RootElement;
+
+        var creds = new DbCredentials
+        {
+            Host = root.GetProperty("host").GetString() ?? "",
+            DbName = root.GetProperty("dbname").GetString() ?? "",
+            Username = root.GetProperty("username").GetString() ?? "",
+            Password = root.GetProperty("password").GetString() ?? ""
+        };
+
+        // Bonus requirement: show retrieval in the Lambda console/CloudWatch logs.
+        // Password is intentionally never logged.
+        context.Logger.LogInformation(
+            $"Secrets Manager: retrieved credentials successfully -> " +
+            $"username='{creds.Username}', host='{creds.Host}', dbname='{creds.DbName}', " +
+            $"secretArn='{response.ARN}', versionId='{response.VersionId}'");
+
+        return creds;
+    }
+
     private static async Task InsertFileRecordAsync(
-        string fileName, string contentType, DateTime uploadTimestamp, ILambdaContext context)
+        string fileName, string contentType, DateTime uploadTimestamp, DbCredentials dbCreds, ILambdaContext context)
     {
         var connectionString =
-            $"Server={DbHost};Database={DbName};User={DbUser};Password={DbPassword};SslMode=Required;";
+            $"Server={dbCreds.Host};Database={dbCreds.DbName};User={dbCreds.Username};Password={dbCreds.Password};SslMode=Required;";
 
         await using var connection = new MySqlConnection(connectionString);
         await connection.OpenAsync();
@@ -74,4 +113,15 @@ public class Function
         int rowsAffected = await command.ExecuteNonQueryAsync();
         context.Logger.LogInformation($"Inserted {rowsAffected} row(s) into uploaded_files table.");
     }
+}
+
+/// <summary>
+/// Plain data holder for DB connection details retrieved from Secrets Manager.
+/// </summary>
+public class DbCredentials
+{
+    public string Host { get; set; } = "";
+    public string DbName { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string Password { get; set; } = "";
 }
