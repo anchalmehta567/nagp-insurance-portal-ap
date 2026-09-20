@@ -5,9 +5,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="AWSSDK.S3" Version="3.7.400.1" />
-  </ItemGroup>
-
+<ItemGroup>
+  <PackageReference Include="AWSSDK.S3" Version="3.7.400.1" />
+  <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="3.7.300" />
+</ItemGroup>
 </Project>
