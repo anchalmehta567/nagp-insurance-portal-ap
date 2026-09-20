@@ -1,6 +1,6 @@
 using Amazon.S3;
 using Amazon.S3.Transfer;
-
+using Amazon.Extensions.NETCore.Setup;
 // ============================================================
 // IMPORTANT: set this to your actual S3 bucket name before deploying
 // ============================================================
