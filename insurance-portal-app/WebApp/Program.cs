@@ -18,7 +18,7 @@ app.MapPost("/api/upload", async (IFormFile file, IAmazonS3 s3Client) =>
         return Results.BadRequest(new { message = "No file selected." });
     }
 
-    var bucketName = Environment.GetEnvironmentVariable("S3_BUCKET_NAME") ?? "insurance-portal-uploads";
+    var bucketName = "nagp-insurance-portal-uploads-anchal";
     var key = $"{Guid.NewGuid()}_{file.FileName}";
 
     using var stream = file.OpenReadStream();
